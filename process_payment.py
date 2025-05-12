@@ -1,91 +1,53 @@
 import serial
-import time
-import sys
+import os
 import csv
 from datetime import datetime
 
-SERIAL_PORT = '/dev/ttyUSB0'  # (COM3 on Windows)
+SERIAL_PORT = '/dev/ttyACM0'  # Change if needed
 BAUD_RATE = 9600
-CSV_FILENAME = 'transactions.csv'
+CSV_FILE = 'transactions.csv'
 
-def wait_for_card(ser):
-    print("Please place your RFID card on the reader...")
-
-    while True:
-        if ser.in_waiting:
-            line = ser.readline().decode('utf-8').strip()
-            if line.startswith("LOG:"):
-                return parse_log_line(line)
-
-def parse_log_line(line):
+def parse_log(line):
+    # Format: LOG: Plate=RAH972U, Old=600.00, Deducted=200.00, New=400.00
     try:
-        # Strip prefix and split key-value pairs
-        data = line[4:]  # Remove 'LOG:'
-        parts = data.split(',')
-
-        plate = parts[0].split('=')[1]
-        old_bal = float(parts[1].split('=')[1])
-        deducted = float(parts[2].split('=')[1])
-        new_bal = float(parts[3].split('=')[1])
-
+        parts = line.replace("LOG:", "").strip().split(", ")
         return {
-            'plate': plate,
-            'old_balance': old_bal,
-            'deducted': deducted,
-            'new_balance': new_bal,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'plate': parts[0].split('=')[1],
+            'old_balance': float(parts[1].split('=')[1]),
+            'deducted': float(parts[2].split('=')[1]),
+            'new_balance': float(parts[3].split('=')[1])
         }
     except Exception as e:
-        print(f"Error parsing log line: {line}")
-        print(e)
+        print(f"Error parsing: {line}\n{e}")
         return None
 
 def save_to_csv(data):
-    file_exists = False
-    try:
-        file_exists = open(CSV_FILENAME)
-    except FileNotFoundError:
-        pass
-
-    with open(CSV_FILENAME, mode='a', newline='') as csvfile:
-        fieldnames = ['timestamp', 'plate', 'old_balance', 'deducted', 'new_balance']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        # Write header if file is new
-        if not file_exists:
+    new_file = not os.path.exists(CSV_FILE)
+    with open(CSV_FILE, 'a', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=data.keys())
+        if new_file:
             writer.writeheader()
-
-        writer.writerow({
-            'timestamp': data['timestamp'],
-            'plate': data['plate'],
-            'old_balance': data['old_balance'],
-            'deducted': data['deducted'],
-            'new_balance': data['new_balance']
-        })
+        writer.writerow(data)
 
 def main():
     print("Initializing RFID Payment System...")
-
     try:
         with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=5) as ser:
-            time.sleep(2)  # Wait for Arduino to be ready
-
-            transaction = wait_for_card(ser)
-            if transaction:
-                print("\nPayment Processed:")
-                print(f"  Plate Number : {transaction['plate']}")
-                print(f"  Old Balance  : {transaction['old_balance']:.2f}")
-                print(f"  Deducted     : {transaction['deducted']:.2f}")
-                print(f"  New Balance  : {transaction['new_balance']:.2f}")
-
-                save_to_csv(transaction)
-                print("Transaction saved to 'transactions.csv'")
-            else:
-                print("Failed to read card or parse transaction.")
-
-    except serial.SerialException as e:
-        print(f"Serial connection error: {e}")
-        sys.exit(1)
+            print("Waiting for card log from Arduino...")
+            while True:
+                line = ser.readline().decode('utf-8').strip()
+                if line.startswith("LOG:"):
+                    data = parse_log(line)
+                    if data:
+                        print("\n--- Transaction ---")
+                        for k, v in data.items():
+                            print(f"{k.capitalize():>12}: {v}")
+                        save_to_csv(data)
+                        print("Saved to transactions.csv\n")
+                        break  # Exit after one read
+    except Exception as e:
+        print(f"Serial error: {e}")
 
 if __name__ == '__main__':
     main()
